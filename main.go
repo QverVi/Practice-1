@@ -11,35 +11,43 @@ import (
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/joho/godotenv"
-	"github.com/xuri/excelize/v2"
+	godotenv "github.com/joho/godotenv"
+	excelize "github.com/xuri/excelize/v2"
 )
 
+// Глобальные переменные
 var bot *tgbotapi.BotAPI
+var textError string
+var strbuild strings.Builder
 
 // Карта для хранения режима обработки по chatID
 var userMode = make(map[int64]string)
 
+// функции для оптимизации
+func errors(err error, textError string) {
+	if err != nil {
+		fmt.Println(err)
+		log.Fatal(textError)
+	}
+}
 func main() {
 	// Загружаем переменные окружения
 	err := godotenv.Load(".env")
-	if err != nil {
-		fmt.Println(err)
-		log.Fatal(".env not found")
-	}
+	textError = ".env не найден"
+	errors(err, textError)
 
 	bot, err = tgbotapi.NewBotAPI(os.Getenv("token_telegram_bot"))
-	if err != nil {
-		log.Fatalf("Failed to init api: %v", err)
-	}
+	textError = "Не удалось инициализировать api"
+	errors(err, textError)
 
-	// Настройка получения обновлений
+	// Настройка и получение обновлений
 	updateConf := tgbotapi.NewUpdate(0)
 	updateConf.Timeout = 30
 	updates := bot.GetUpdatesChan(updateConf)
 
 	// Обработка обновлений
 	for update := range updates {
+		strbuild.Reset()
 		if update.Message != nil {
 			if update.Message.IsCommand() {
 				handleCommand(bot, update.Message)
@@ -53,18 +61,20 @@ func main() {
 		}
 	}
 }
+
 func handleCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	switch msg.Command() {
 	case "start":
-		sendModeSelection(bot, msg.Chat.ID)
+		bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "Здравстуйте, это бот по обработке отчетов\nвоспользуйтесь /help для того чтобы узнать больше"))
 	case "help":
-		bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "Отправьте XLS файл, и я подготовлю нужный отчет.\nИспользуйте /start, чтобы выбрать режим обработки."))
+		bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "Отправьте XLSX/XLS файл, и я подготовлю нужный отчет.\nИспользуйте /setmode, чтобы выбрать режим обработки"))
 	case "setmode":
 		sendModeSelection(bot, msg.Chat.ID)
 	default:
 		bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "Неизвестная команда. Используйте /start или /help"))
 	}
 }
+
 func sendModeSelection(bot *tgbotapi.BotAPI, chatID int64) {
 	msg := tgbotapi.NewMessage(chatID, "Выберите режим обработки:")
 	keyboard := tgbotapi.InlineKeyboardMarkup{
@@ -86,6 +96,7 @@ func sendModeSelection(bot *tgbotapi.BotAPI, chatID int64) {
 	msg.ReplyMarkup = keyboard
 	bot.Send(msg)
 }
+
 func handleCallback(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery) {
 	chatID := callback.Message.Chat.ID
 	data := callback.Data
@@ -105,14 +116,15 @@ func handleCallback(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery) {
 		userMode[chatID] = "submitted_homework"
 	}
 
-	bot.Request(tgbotapi.NewCallback(callback.ID, "Режим выбран: "+strings.ReplaceAll(strings.Title(strings.ReplaceAll(data[5:], "_", " ")), " ", " ")))
+	text := "Режим выбран: " + strings.Title(strings.ReplaceAll(data[5:], "_", " "))
+	bot.Request(tgbotapi.NewCallback(callback.ID, text))
 	bot.Send(tgbotapi.NewMessage(chatID, "Режим обработки установлен. Теперь отправьте файл для обработки."))
 }
+
 func handleDocument(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	filename := msg.Document.FileName
 
-	// Проверка расширения файла
 	if !(strings.HasSuffix(filename, ".xlsx") || strings.HasSuffix(filename, ".xls")) {
 		bot.Send(tgbotapi.NewMessage(chatID, "Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)"))
 		return
@@ -138,20 +150,18 @@ func handleDocument(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	category := determineFileType(localPath)
 
 	// Проверка режима
-	mode, hasMode := userMode[chatID]
+	mode, boolMode := userMode[chatID]
 	var res string
-	var errProc error
+	var errProcess error
 
-	if hasMode {
+	if boolMode {
 		switch mode {
 		case "schedule", "lessons", "students", "attendance", "checked_homework", "submitted_homework":
-			// все хорошо
 		default:
 			bot.Send(tgbotapi.NewMessage(chatID, "Некорректный режим обработки. Используйте /start для выбора режима."))
 			return
 		}
 	} else {
-		// Если режим не выбран, используем автоматическое определение
 		if category == "" {
 			bot.Send(tgbotapi.NewMessage(chatID, "Не удалось определить тип файла. Пожалуйста, убедитесь, что выбран правильный файл."))
 			return
@@ -159,83 +169,83 @@ func handleDocument(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	}
 
 	// Обработка по режиму или по определенному типу файла
-	if hasMode {
+	if boolMode {
 		switch mode {
 		case "schedule":
-			res, errProc = processSchedule(localPath)
+			res, errProcess = processSchedule(localPath)
 		case "lessons":
-			res, errProc = processLessonTopics(localPath)
+			res, errProcess = processLessonTopics(localPath)
 		case "students":
-			res, errProc = processStudents(localPath)
+			res, errProcess = processStudents(localPath)
 		case "attendance":
-			res, errProc = processAttendance(localPath)
+			res, errProcess = processAttendance(localPath)
 		case "checked_homework":
-			res, errProc = processCheckedHomework(localPath)
+			res, errProcess = processCheckedHomework(localPath)
 		case "submitted_homework":
-			res, errProc = processSubmittedHomework(localPath)
+			res, errProcess = processSubmittedHomework(localPath)
 		}
 	} else {
 		switch category {
 		case "Расписание групп":
-			res, errProc = processSchedule(localPath)
+			res, errProcess = processSchedule(localPath)
 		case "Темы уроков":
-			res, errProc = processLessonTopics(localPath)
+			res, errProcess = processLessonTopics(localPath)
 		case "Отчет по студентам":
-			res, errProc = processStudents(localPath)
+			res, errProcess = processStudents(localPath)
 		case "Посещаемость по преподавателям":
-			res, errProc = processAttendance(localPath)
+			res, errProcess = processAttendance(localPath)
 		case "Отчет по проверенным ДЗ":
-			res, errProc = processCheckedHomework(localPath)
+			res, errProcess = processCheckedHomework(localPath)
 		case "Отчет по сданным ДЗ":
-			res, errProc = processSubmittedHomework(localPath)
+			res, errProcess = processSubmittedHomework(localPath)
 		default:
 			bot.Send(tgbotapi.NewMessage(chatID, "Обработка этого типа файла не реализована или не распознана."))
 			return
 		}
 	}
 
-	if errProc != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при обработке файла: %v", errProc)))
+	if errProcess != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при обработке файла: %v", errProcess)))
 		return
 	}
 
 	parts := splitMessage(res, 4000)
 	bot.Send(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
-	for _, p := range parts {
-		bot.Send(tgbotapi.NewMessage(chatID, p))
+	for _, part := range parts {
+		bot.Send(tgbotapi.NewMessage(chatID, part))
 	}
 }
 
 func downloadFile(url, path string) error {
-	resp, err := http.Get(url)
+	responce, err := http.Get(url)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP статус %d", resp.StatusCode)
+	defer responce.Body.Close()
+	if responce.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP статус %d", responce.StatusCode)
 	}
 	out, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, resp.Body)
+	_, err = io.Copy(out, responce.Body)
 	return err
 }
 
 // Функция определения типа файла по содержимому
 func determineFileType(filepath string) string {
-	f, err := excelize.OpenFile(filepath)
+	file, err := excelize.OpenFile(filepath)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-	sheets := f.GetSheetList()
+	defer file.Close()
+	sheets := file.GetSheetList()
 	if len(sheets) == 0 {
 		return ""
 	}
-	rows, err := f.GetRows(sheets[0])
+	rows, err := file.GetRows(sheets[0])
 	if err != nil || len(rows) == 0 {
 		return ""
 	}
@@ -266,43 +276,46 @@ func determineFileType(filepath string) string {
 
 // 1. Расписание групп
 func processSchedule(filepath string) (string, error) {
-	f, err := excelize.OpenFile(filepath)
+	file, err := excelize.OpenFile(filepath)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	rows, err := f.GetRows(f.GetSheetName(0))
+	rows, err := file.GetRows(file.GetSheetName(0))
 	if err != nil || len(rows) < 2 {
 		return "Нет данных в файле", nil
 	}
 	header := rows[0]
-	groupIdx, subjectIdx := -1, -1
+	groupIndx, pairIndx, timeIndx := -1, -1, -1
 
-	// Ищем колонки
 	for i, col := range header {
 		colLower := strings.ToLower(col)
 		if strings.Contains(colLower, "группа") {
-			groupIdx = i
-		} else if strings.Contains(colLower, "предмет") || strings.Contains(colLower, "пара") {
-			if subjectIdx == -1 {
-				subjectIdx = i
+			groupIndx = i
+		} else if strings.Contains(colLower, "пара") {
+			if pairIndx == -1 {
+				pairIndx = i
+			}
+		} else if strings.Contains(colLower, "время") {
+			if timeIndx == -1 {
+				timeIndx = i
 			}
 		}
 	}
 
-	if groupIdx == -1 || subjectIdx == -1 {
-		return "Не удалось найти колонки 'Группа' и 'Предмет'", nil
+	if groupIndx == -1 || pairIndx == -1 || timeIndx == -1 {
+		return "Не удалось найти колонки 'Группа' или 'Пара'", nil
 	}
 
 	groupStats := make(map[string]map[string]int)
 
 	for _, row := range rows[1:] {
-		if len(row) <= max(groupIdx, subjectIdx) {
+		if len(row) <= max(groupIndx, pairIndx) {
 			continue
 		}
-		group := strings.TrimSpace(row[groupIdx])
-		subject := strings.TrimSpace(row[subjectIdx])
+		group := strings.TrimSpace(row[groupIndx])
+		subject := strings.TrimSpace(row[pairIndx])
 		if group == "" || subject == "" {
 			continue
 		}
@@ -312,33 +325,31 @@ func processSchedule(filepath string) (string, error) {
 		groupStats[group][subject]++
 	}
 
-	var sb strings.Builder
-	sb.WriteString("📅 ОТЧЕТ ПО РАСПИСАНИЮ ГРУПП\n")
-	sb.WriteString("Количество пар по дисциплинам:\n\n")
+	strbuild.WriteString("📅 ОТЧЕТ ПО РАСПИСАНИЮ ГРУПП\n")
+	strbuild.WriteString("Количество пар по дисциплинам:\n\n")
 	for group, subjects := range groupStats {
-		sb.WriteString(fmt.Sprintf("Группа: %s\n", group))
+		strbuild.WriteString(fmt.Sprintf("Группа: %s\n", group))
 		for subj, count := range subjects {
-			sb.WriteString(fmt.Sprintf("  %s: %d пар\n", subj, count))
+			strbuild.WriteString(fmt.Sprintf("  %s: %d пар\n", subj, count))
 		}
-		sb.WriteString("\n")
+		strbuild.WriteString("\n")
 	}
-	return sb.String(), nil
+	return strbuild.String(), nil
 }
 
 // 2. Темы уроков
 func processLessonTopics(filepath string) (string, error) {
-	f, err := excelize.OpenFile(filepath)
+	file, err := excelize.OpenFile(filepath)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	rows, err := f.GetRows(f.GetSheetName(0))
+	rows, err := file.GetRows(file.GetSheetName(0))
 	if err != nil || len(rows) == 0 {
 		return "Нет данных в файле", nil
 	}
 
-	// Ищем колонку с темами
 	topicCol := -1
 	for i, col := range rows[0] {
 		if strings.Contains(strings.ToLower(col), "тема урока") {
@@ -353,7 +364,6 @@ func processLessonTopics(filepath string) (string, error) {
 	validTopics := []string{}
 	invalidTopics := []string{}
 	pattern := regexp.MustCompile(`^Урок №\s*\d+.*Тема:`)
-
 	for _, row := range rows[1:] {
 		if len(row) <= topicCol {
 			continue
@@ -364,127 +374,125 @@ func processLessonTopics(filepath string) (string, error) {
 		}
 		if pattern.MatchString(topic) {
 			validTopics = append(validTopics, topic)
+
 		} else {
 			invalidTopics = append(invalidTopics, topic)
+
 		}
 	}
 
-	var sb strings.Builder
-	sb.WriteString("📚 ОТЧЕТ ПО ТЕМАМ ЗАНЯТИЙ\n\n")
+	strbuild.WriteString("📚 ОТЧЕТ ПО ТЕМАМ ЗАНЯТИЙ\n\n")
 	if len(validTopics) > 0 {
-		sb.WriteString("✅ Темы в правильном формате:\n")
+		strbuild.WriteString("✅ Темы в правильном формате:\n")
 		for _, t := range validTopics {
-			sb.WriteString(fmt.Sprintf("• %s\n", t))
+			strbuild.WriteString(fmt.Sprintf("• %s\n", t))
 		}
-		sb.WriteString("\n")
+		strbuild.WriteString("\n")
 	}
 	if len(invalidTopics) > 0 {
-		sb.WriteString("❌ Темы в НЕправильном формате:\n")
+		strbuild.WriteString("❌ Темы в НЕправильном формате:\n")
 		for _, t := range invalidTopics {
-			sb.WriteString(fmt.Sprintf("• %s\n", t))
+			strbuild.WriteString(fmt.Sprintf("• %s\n", t))
 		}
 	} else if len(validTopics) == 0 {
-		sb.WriteString("Темы уроков не найдены")
+		strbuild.WriteString("Темы уроков не найдены")
 	}
-	return sb.String(), nil
+	return strbuild.String(), nil
 }
 
 // 3. Студенты со слабым оцениванием
 func processStudents(filepath string) (string, error) {
-	f, err := excelize.OpenFile(filepath)
+	file, err := excelize.OpenFile(filepath)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	rows, err := f.GetRows(f.GetSheetName(0))
+	rows, err := file.GetRows(file.GetSheetName(0))
 	if err != nil || len(rows) < 2 {
 		return "Нет данных в файле", nil
 	}
 	header := rows[0]
-	fioIdx, homeworkIdx, classworkIdx := -1, -1, -1
+	fioIndx, homeworkIndx, classworkIndx := -1, -1, -1
 	for i, col := range header {
 		switch strings.ToLower(col) {
 		case "фио", "fio":
-			fioIdx = i
+			fioIndx = i
 		case "homework", "домашняя работа":
-			homeworkIdx = i
+			homeworkIndx = i
 		case "classwork", "классная работа":
-			classworkIdx = i
+			classworkIndx = i
 		}
 	}
-	if fioIdx == -1 {
+	if fioIndx == -1 {
 		return "Не найдена колонка с ФИО студентов", nil
 	}
 	var problemStudents []string
 	for _, row := range rows[1:] {
-		if len(row) <= max(fioIdx, homeworkIdx, classworkIdx) {
+		if len(row) <= max(fioIndx, homeworkIndx, classworkIndx) {
 			continue
 		}
-		name := strings.TrimSpace(row[fioIdx])
+		name := strings.TrimSpace(row[fioIndx])
 		if name == "" {
 			continue
 		}
-		// Проверка домашней оценки
-		if homeworkIdx != -1 && len(row) > homeworkIdx {
-			if row[homeworkIdx] == "1" {
+		if homeworkIndx != -1 && len(row) > homeworkIndx {
+			if row[homeworkIndx] == "1" {
 				problemStudents = append(problemStudents, fmt.Sprintf("%s (домашняя: 1)", name))
 				continue
 			}
 		}
-		// Проверка классной работы
-		if classworkIdx != -1 && len(row) > classworkIdx {
-			gradeStr := strings.TrimSpace(row[classworkIdx])
+		if classworkIndx != -1 && len(row) > classworkIndx {
+			gradeStr := strings.TrimSpace(row[classworkIndx])
 			if grade, err := strconv.ParseFloat(gradeStr, 64); err == nil && grade < 3 {
 				problemStudents = append(problemStudents, fmt.Sprintf("%s (классная: %.1f)", name, grade))
 			}
 		}
 	}
-	var sb strings.Builder
-	sb.WriteString("👨‍🎓 ОТЧЕТ ПО СТУДЕНТАМ\n\n")
+	strbuild.WriteString("👨‍🎓 ОТЧЕТ ПО СТУДЕНТАМ\n\n")
 	if len(problemStudents) > 0 {
-		sb.WriteString("Студенты, требующие внимания:\n")
+		strbuild.WriteString("Студенты, требующие внимания:\n")
 		for i, s := range problemStudents {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
+			strbuild.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
 		}
 	} else {
-		sb.WriteString("✅ Все студенты успешно справляются")
+		strbuild.WriteString("✅ Все студенты успешно справляются")
 	}
-	return sb.String(), nil
+	return strbuild.String(), nil
 }
 
 // 4. Посещаемость преподавателей ниже 40%
 func processAttendance(filepath string) (string, error) {
-	f, err := excelize.OpenFile(filepath)
+	file, err := excelize.OpenFile(filepath)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	rows, err := f.GetRows(f.GetSheetName(0))
+	rows, err := file.GetRows(file.GetSheetName(0))
 	if err != nil || len(rows) < 2 {
 		return "Нет данных в файле", nil
 	}
 	header := rows[0]
-	teacherIdx, attendanceIdx := -1, -1
+	teacherIndx, attendanceIndx := -1, -1
 	for i, col := range header {
 		switch strings.ToLower(col) {
 		case "фио преподавателя":
-			teacherIdx = i
+			teacherIndx = i
 		case "средняя посещаемость":
-			attendanceIdx = i
+			attendanceIndx = i
 		}
 	}
-	if teacherIdx == -1 || attendanceIdx == -1 {
+	if teacherIndx == -1 || attendanceIndx == -1 {
 		return "Не найдены необходимые колонки", nil
 	}
 	var lowAttendanceTeachers []string
 	for _, row := range rows[1:] {
-		if len(row) <= max(teacherIdx, attendanceIdx) {
+		if len(row) <= max(teacherIndx, attendanceIndx) {
 			continue
 		}
-		teacher := strings.TrimSpace(row[teacherIdx])
-		attStr := strings.TrimSpace(row[attendanceIdx])
+		teacher := strings.TrimSpace(row[teacherIndx])
+		attStr := strings.TrimSpace(row[attendanceIndx])
 		if teacher == "" || attStr == "" {
 			continue
 		}
@@ -495,28 +503,27 @@ func processAttendance(filepath string) (string, error) {
 			}
 		}
 	}
-	var sb strings.Builder
-	sb.WriteString("👨‍🏫 ОТЧЕТ ПО ПОСЕЩАЕМОСТИ ПРЕПОДАВАТЕЛЕЙ\n\n")
+	strbuild.WriteString("👨‍🏫 ОТЧЕТ ПО ПОСЕЩАЕМОСТИ ПРЕПОДАВАТЕЛЕЙ\n\n")
 	if len(lowAttendanceTeachers) > 0 {
-		sb.WriteString("Преподаватели с посещаемостью ниже 40%:\n")
+		strbuild.WriteString("Преподаватели с посещаемостью ниже 40%:\n")
 		for i, t := range lowAttendanceTeachers {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, t))
+			strbuild.WriteString(fmt.Sprintf("%d. %s\n", i+1, t))
 		}
 	} else {
-		sb.WriteString("✅ У всех преподавателей посещаемость 40% и выше")
+		strbuild.WriteString("✅ У всех преподавателей посещаемость 40% и выше")
 	}
-	return sb.String(), nil
+	return strbuild.String(), nil
 }
 
 // 5. Проверка проверенных домашних
 func processCheckedHomework(filepath string) (string, error) {
-	f, err := excelize.OpenFile(filepath)
+	file, err := excelize.OpenFile(filepath)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	rows, err := f.GetRows(f.GetSheetName(0))
+	rows, err := file.GetRows(file.GetSheetName(0))
 	if err != nil || len(rows) < 2 {
 		return "Нет данных в файле", nil
 	}
@@ -555,27 +562,26 @@ func processCheckedHomework(filepath string) (string, error) {
 			}
 		}
 	}
-	var sb strings.Builder
-	sb.WriteString("📝 ОТЧЕТ ПО ПРОВЕРЕННЫМ ДОМАШНИМ ЗАДАНИЯМ\n\n")
+	strbuild.WriteString("📝 ОТЧЕТ ПО ПРОВЕРЕННЫМ ДОМАШНИМ ЗАДАНИЯМ\n\n")
 	if len(lowPercentTeachers) > 0 {
-		sb.WriteString("Преподаватели с проверкой ниже 70%:\n")
+		strbuild.WriteString("Преподаватели с проверкой ниже 70%:\n")
 		for i, t := range lowPercentTeachers {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, t))
+			strbuild.WriteString(fmt.Sprintf("%d. %s\n", i+1, t))
 		}
 	} else {
-		sb.WriteString("✅ Все преподаватели проверяют более 70% заданий")
+		strbuild.WriteString("✅ Все преподаватели проверяют более 70% заданий")
 	}
-	return sb.String(), nil
+	return strbuild.String(), nil
 }
 
 func processSubmittedHomework(filepath string) (string, error) {
-	f, err := excelize.OpenFile(filepath)
+	file, err := excelize.OpenFile(filepath)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	rows, err := f.GetRows(f.GetSheetName(0))
+	rows, err := file.GetRows(file.GetSheetName(0))
 	if err != nil || len(rows) < 2 {
 		return "Нет данных в файле", nil
 	}
@@ -583,7 +589,6 @@ func processSubmittedHomework(filepath string) (string, error) {
 	header := rows[0]
 	var studentIdx, percentIdx int = -1, -1
 
-	// Находим индексы колонок "ФИО" и "процент выполнения"
 	for i, col := range header {
 		colLower := strings.ToLower(col)
 		if colLower == "фио" || colLower == "fio" {
@@ -598,8 +603,7 @@ func processSubmittedHomework(filepath string) (string, error) {
 		return "Не найдены колонки ФИО или процента выполнения", nil
 	}
 
-	var result strings.Builder
-	result.WriteString("ФИО студента - % выполнения\n\n")
+	strbuild.WriteString("ФИО студента - % выполнения\n\n")
 	for _, row := range rows[1:] {
 		if len(row) <= max(studentIdx, percentIdx) {
 			continue
@@ -611,20 +615,11 @@ func processSubmittedHomework(filepath string) (string, error) {
 			continue
 		}
 		if percentInt < 70 {
-			result.WriteString(fmt.Sprintf("%s - %s%%\n", fio, percent))
+			strbuild.WriteString(fmt.Sprintf("%s - %s%%\n", fio, percent))
 		}
 	}
 
-	return result.String(), nil
-}
-func max(nums ...int) int {
-	m := nums[0]
-	for _, n := range nums {
-		if n > m {
-			m = n
-		}
-	}
-	return m
+	return strbuild.String(), nil
 }
 
 func splitMessage(text string, maxLen int) []string {
